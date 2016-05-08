@@ -73,7 +73,7 @@ getNextPalyndrome line =
 
         next_right = incString $ right
         next_right_len = C8.length next_right
-        next_left = case 1 of
+{-        next_left = case 1 of
             _ | next_left_center_len < 1 ->  ""
             _ | (next_left_center_len > left_center_len && center_len == 0)
                 || (next_left_center_len == left_center_len && center_len == 1) ->  C8.take (next_left_center_len - 1) next_left_center
@@ -82,7 +82,12 @@ getNextPalyndrome line =
             _ | next_left_center_len < 1 -> ""
             _ | (next_left_center_len > left_center_len && center_len == 0) 
                 || (next_left_center_len == left_center_len && center_len == 1)  -> C8.drop (next_left_center_len - 1 ) next_left_center
-            _ | otherwise -> ""
+            _ | otherwise -> "" -}
+        (!next_left, !next_center) = if next_left_center_len == (left_len + center_len)
+            then (take left_len next_left_center, take center_len $! drop left_len next_left_center)
+            else if center_len == 0
+                then (take (next_left_center_len - 1) next_left_center, drop (next_left_center_len-1) next_left_center)
+                else (take (next_left_center_len - 1) next_left_center, "")
     in
     case line_len of
         _ | line_len < 2 || line == "10" -> "11"
