@@ -72,17 +72,26 @@ getNextPalyndrome line =
         next_left_center = incString $! left_center
         next_left_center_len = C8.length next_left_center
 
-        next_right = incString $ right
-        next_right_len = C8.length next_right
         (!next_left, !next_center) = if next_left_center_len == (left_len + center_len)
             then (take left_len next_left_center, take center_len $! drop left_len next_left_center)
             else if center_len == 0
                 then (take left_len next_left_center, take 1 $ drop left_len next_left_center)
                 else (take (left_len + 1) next_left_center, "")
+        right_base = half+center_len
+        isRLeftMoreRight = isMoreRec 0
+        isMoreRec:: Int -> Bool
+        isMoreRec !currid | currid == half = False
+        isMoreRec !currid = 
+            let lc = C8.index line (half - 1 - currid)
+                rc = C8.index line (half+center_len+currid)
+            in case 1 of
+                _ | lc > rc -> True
+                _ | lc < rc -> False
+                _ -> isMoreRec (currid+1)
     in
     case line_len of
         _ | line_len < 2 || line == "10" -> "11"
-        _ | next_right <= rleft && next_right_len <= left_len -> left `BS.append` center `BS.append` rleft
+        _ | isRLeftMoreRight -> left `BS.append` center `BS.append` rleft
         _ -> next_left `BS.append` next_center `BS.append` (C8.reverse next_left)
 
 incString:: C8.ByteString -> C8.ByteString
@@ -91,12 +100,11 @@ incString string =
     let !src_len = C8.length string
         incChar:: Char-> Char
         incChar x = chr $! (ord x) + 1
-        inc' !string !id !acc | id >= src_len = C8.pack ('1':acc)
-        inc' !string !id !acc | C8.index string id == '9' = inc' string (id+1) ('0':acc)
-        inc' !string !id !acc = (C8.reverse $! C8.drop (id+1) string) `BS.append` (C8.pack ((incChar $! C8.index string id):acc))
+        inc' !string !id !acc | id == 0 = C8.pack ('1':acc)
+        inc' !string !id !acc | C8.index string (id-1) == '9' = inc' string (id-1) ('0':acc)
+        inc' !string !id !acc = (C8.take (id-1) string) `BS.append` (C8.pack ((incChar $! C8.index string (id-1)):acc))
 
-   in  inc' (C8.reverse string) 0 []
-
+   in  inc' string src_len []
 
 
 
