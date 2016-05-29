@@ -10,6 +10,7 @@ import System.IO
     ( hTell
     , stdin
     , hGetBufSome
+    , hPutBuf
     )
 import qualified GHC.IO.FD as FD
 import Data.Char
@@ -49,6 +50,7 @@ import Data.ByteString.Char8 as C8
     , drop
     , ByteString(..)
     , pack
+    , unpack
     , index
     , reverse
     , null
@@ -84,12 +86,12 @@ main = do
 --    mcount <- C8.getLine >>= return . readInt
     ret_buf::(ForeignPtr Word8) <- mallocForeignPtrBytes line_sz
     let ret_buf_bs = PS ret_buf 0 line_sz
-    read_buf::(ForeignPtr Word8) <- mallocForeignPtrBytes readBufSz
+    read_buf::(ForeignPtr Word8) <- mallocForeignPtrBytes line_sz
+    let read_buf_bs =  PS read_buf 0 line_sz
 
     fin <- fdopen 0 "r"
     fout <- fdopen 1 "w"
 
-    fwrite "hello world\n" fout
     !line <- fgets ret_buf_bs fin
     let mcount = readInt line
     
@@ -98,24 +100,21 @@ main = do
 
     case mcount of
         Nothing -> return ()
-        Just (count,_ ) -> readLines count fin fout ret_buf_bs
+        Just (count,_ ) -> readLines count fin ret_buf_bs read_buf_bs fout
     return ()
 
 
 
-readLines:: Int -> Ptr CFile -> Ptr CFile -> ByteString -> IO ()
-readLines 0 _ _ _ = return ()
-readLines !count !fin !fout ptr = do
+readLines:: Int -> Ptr CFile -> ByteString -> ByteString-> Ptr CFile-> IO ()
+readLines 0 _ _ _  _= return ()
+readLines !count !fin !ret_buf !read_buf !fout = do
     --(!line, !newstate) <- {-# SCC bufread #-} bufferedGetLine state  
-    !line <- fgets ptr fin
-    -- {-# SCC calc_plindrome #-} getNextPalyndrome ptr line >>= C8.putStrLn
-    fwrite line fin
-    fwrite "\n" fout
-    -- C8.putStrLn line
-    readLines (count-1) fin fout ptr  
+    !line <- fgets read_buf fin 
+    {-# SCC calc_plindrome #-} getNextPalyndrome ret_buf line >>= fwrite fout
+    readLines (count-1) fin ret_buf read_buf fout
 
 customReverse:: ByteString-> Int-> Int-> ByteString -> IO ByteString
-customReverse srcBS@(PS !buf srcOffset srcLen) left_len center_len (PS !dstBuf dstOffset dstLen) = 
+customReverse srcBS@(PS !buf srcOffset srcLen) left_len center_len (PS !dstBuf dstOffset dstLen) =
     withForeignPtr buf $ \p_fsrc -> withForeignPtr dstBuf $ \p_fdst -> do
     let p_src::(Ptr Word8) = plusPtr p_fsrc srcOffset
         !p_dst = plusPtr p_fdst dstOffset
@@ -130,7 +129,7 @@ customReverse srcBS@(PS !buf srcOffset srcLen) left_len center_len (PS !dstBuf d
     return $! PS dstBuf dstOffset $! newlen
 
 getNextPalyndrome:: ByteString -> C8.ByteString-> IO C8.ByteString
-getNextPalyndrome ptr line =  do
+getNextPalyndrome ptr@(PS buf offset len) line =  do
     let !line_len = {-# SCC line_len #-} C8.length line
         !half = {-# SCC half #-} fromIntegral $ line_len `shiftR` 1
         !left = {-# SCC left #-} C8.take half line
@@ -139,14 +138,6 @@ getNextPalyndrome ptr line =  do
         !left_center = {-# SCC left_center #-} C8.take left_center_len line
         !left_center_len = {-# SCC left_center_len #-}half + center_len
 
-    !next_left_center <-  {-# SCC incString_call #-} incString left_center ptr
-
-    let !next_left_center_len = {-# SCC next_left_center_len #-} C8.length next_left_center
-        (!next_left_len, !next_center_len) = {-# SCC next_center_len #-} case 1 of
-            _ | next_left_center_len > (half + center_len) -> if  center_len == 1
-                    then (half + 1, 0)
-                    else (half, 1)
-            _ -> (half, center_len)
         isRLeftMoreRight = {-# SCC isRLeftMoreRight #-} isMoreRec 0
         isMoreRec !currid | currid == half = False
         isMoreRec !currid = 
@@ -157,19 +148,31 @@ getNextPalyndrome ptr line =  do
                 _ | lc < rc -> False
                 _ -> isMoreRec (currid+1)
     case 1 of
-        _ | line_len < 2 || (line_len == 2 && line == "10") -> return "11"
+        _ | line_len < 2 || (line_len == 2 && line == "10") -> withForeignPtr buf $ \p_buf-> do
+            pokeElemOff p_buf 0 $ fromIntegral $ ord '1'
+            pokeElemOff p_buf 1 $ fromIntegral $ ord '1'
+            return $! PS buf 0 2 
         _ | isRLeftMoreRight -> {-# SCC customReverse1 #-} customReverse left_center half center_len ptr
-        _ -> {-# SCC customReverse2 #-} customReverse next_left_center next_left_len next_center_len next_left_center
+        _ -> do
+            !next_left_center <-  {-# SCC incString_call #-} incString left_center ptr
+            let !next_left_center_len = {-# SCC next_left_center_len #-} C8.length next_left_center
+                (!next_left_len, !next_center_len) = {-# SCC next_center_len #-} case 1 of
+                    _ | next_left_center_len > (half + center_len) -> if  center_len == 1
+                            then (half + 1, 0)
+                            else (half, 1)
+                    _ -> (half, center_len)
+
+            {-# SCC customReverse2 #-} customReverse next_left_center next_left_len next_center_len line
 
 incString:: C8.ByteString -> ByteString-> IO C8.ByteString
 incString !string@(PS srcFPtr srcOffset src_len) (PS !buf _ _) = withForeignPtr srcFPtr $ \srcPtrBase -> withForeignPtr buf $ \ptrBuf -> do
     let !srcPtr = plusPtr srcPtrBase srcOffset
-        !tailedPtr = plusPtr ptrBuf 1
+        (!tailedPtr)::Ptr Word8 = plusPtr ptrBuf 1
         !buf_len = if src_len > 1000000 then 1000000
             else src_len
     memcpy tailedPtr srcPtr buf_len
-    let inc' !id | id == 0 = do
-            pokeElemOff ptrBuf 0 $! fromIntegral $ ord '1' 
+    let inc' 0 = do
+            poke ptrBuf $! fromIntegral $ ord '1' 
             return (0, src_len+1)
         inc' !id = do
             oldchar <- peekElemOff tailedPtr (id-1)
@@ -261,29 +264,33 @@ fdopen fd mode = withCString mode $ \p_str -> do
     c_fdopen (fromIntegral fd)  p_str
 
 foreign import ccall "stdio.h fgets" c_fgets
-    :: Ptr CChar-> CInt-> Ptr CFile-> IO (Ptr CChar)
+    :: Ptr Word8-> CInt-> Ptr CFile-> IO (Ptr CChar)
 
 fgets:: ByteString-> Ptr CFile-> IO ByteString
 fgets (PS buf offset len) fd = withForeignPtr buf $ \p_buf-> do
-    let !p_dest = p_buf `plusPtr` offset
-    !ret <- c_fgets p_dest (fromIntegral $! len) fd
+    !ret <- c_fgets p_buf (fromIntegral $! len) fd
     if nullPtr == ret
-        then return $! PS buf offset 0
+        then return $! PS buf 0 0
         else do
-            !len <- c_strlen p_dest >>= return . fromIntegral
+            !len <- c_strlen (castPtr p_buf) >>= return . fromIntegral
             if len == 0
-                then return $! PS buf offset 0
+                then return $! PS buf 0 0
                 else do
-                    chr <- peek (p_dest `plusPtr` (len-1))
-                    if chr == ord '\n'
-                        then return $! PS buf offset (len-1)
-                        else return $! PS buf offset len
+                    chr <- peek ((p_buf `plusPtr` (len-1)):: Ptr Word8)
+                    if chr == (fromIntegral $ ord '\n')
+                        then return $! PS buf 0 (len-1)
+                        else return $! PS buf 0 len
 
 foreign import ccall "stdio.h fwrite" c_fwrite
-    :: Ptr CChar-> CInt-> CInt-> Ptr CFile-> IO Int
+    :: Ptr Word8-> CInt-> CInt-> Ptr CFile-> IO Int
 
-fwrite:: ByteString-> Ptr CFile-> IO Int
-fwrite (PS !buf offset len) fout = withForeignPtr buf $ \p_buf -> do
-    P.putStrLn $ show len
-    P.putStrLn $ show offset
-    c_fwrite (p_buf `plusPtr` offset) (fromIntegral len) 1 fout
+fwrite:: Ptr CFile-> ByteString-> IO Int
+fwrite fout (PS !buf offset len) = withForeignPtr buf $ \p_buf -> do
+    let p_dst = (p_buf `plusPtr` offset)::Ptr Word8
+    pokeElemOff p_dst len $ fromIntegral $ ord '\n'
+    c_fwrite p_dst 1 (fromIntegral $ len + 1 ) fout
+
+
+hwrite:: ByteString-> IO ()
+hwrite (PS buf offset len) = withForeignPtr buf $ \p_buf -> do
+    hPutBuf stdout (p_buf `plusPtr` offset) len
